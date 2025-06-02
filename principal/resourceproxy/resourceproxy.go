@@ -173,10 +173,32 @@ func (p *ResourceProxy) Stop(ctx context.Context) error {
 	return p.server.Shutdown(ctx)
 }
 
+// Processing URI PATCH /apis/apps/v1/namespaces/guestbook/deployments/kustomize-guestbook-ui
+// Processing URI GET /apis/apps/v1?timeout=32s
+// Processing URI GET /apis/apps/v1/namespaces/guestbook/deployments/kustomize-guestbook-ui
+// Processing URI POST /api/v1/namespaces/guestbook/configmaps?dryRun=All
+
+// Processing URI DELETE /api/v1/namespaces/guestbook/services/kustomize-guestbook-ui
+
+// POST /apis/events.k8s.io/v1/namespaces/{namespace}/events
+
+// curl -X PATCH -H 'Content-Type: application/strategic-merge-patch+json' --data \
+// "{\"data\":{\"name\":\"chetan\"}}" \
+// 	'http://127.0.0.1:8001/api/v1/namespaces/argocd/configmaps/argocd-cm'
+
 // proxyHandler is a HTTP request handler that inspects incoming requests. By
 // default, every request will be passed down to the reverse proxy.
 func (p *ResourceProxy) proxyHandler(w http.ResponseWriter, r *http.Request) {
 	log().Debugf("Processing URI %s %s (goroutines:%d)", r.Method, r.RequestURI, runtime.NumGoroutine())
+	log().Tracef("With Params: %v", r.URL.Query())
+	// if r.Method == http.MethodPost {
+	// 	content, err := io.ReadAll(r.Body)
+	// 	if err != nil {
+	// 		log().Errorf("Error reading request body: %v", err)
+	// 	} else {
+	// 		log().Debugf("Request body with length: %s", string(content))
+	// 	}
+	// }
 
 	// Loop through all registered matchers and match them against the request
 	// URI's path. First match wins. This is obviously not the most efficient
@@ -185,6 +207,7 @@ func (p *ResourceProxy) proxyHandler(w http.ResponseWriter, r *http.Request) {
 	for _, m := range p.interceptors {
 		matches := m.matcher.FindStringSubmatch(r.URL.Path)
 		if matches == nil {
+			log().Debugf("Request did not match %s %s", r.Method, r.RequestURI)
 			continue
 		} else {
 			validMethod := false
@@ -196,6 +219,7 @@ func (p *ResourceProxy) proxyHandler(w http.ResponseWriter, r *http.Request) {
 			// We must have a callback function defined. Also, method must be
 			// allowed.
 			if !validMethod || m.fn == nil {
+				log().Debugf("Not a valid method %s %s", r.Method, r.RequestURI)
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}

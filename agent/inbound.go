@@ -18,6 +18,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/argoproj-labs/argocd-agent/internal/backend"
@@ -32,6 +35,7 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 )
 
@@ -88,6 +92,69 @@ func (a *Agent) processIncomingEvent(ev *event.Event) error {
 	return err
 }
 
+func (a *Agent) processIncomingPostResourceRequest(ctx context.Context, req *event.ResourceRequest, client dynamic.NamespaceableResourceInterface, dynClient *dynamic.DynamicClient, log *logrus.Entry) (*unstructured.Unstructured, error) {
+	log.Debugf("Processing POST request for resource %v Body: %v", req.GroupVersionResource, string(req.Body))
+
+	resourceObj := &unstructured.Unstructured{}
+	if err := json.Unmarshal(req.Body, resourceObj); err != nil {
+		log.Errorf("Failed to unmarshal resource: %v", err)
+		return nil, err
+	}
+
+	fmt.Println("Printing resource object", resourceObj.Object, req.Params)
+
+	createOpts := v1.CreateOptions{}
+	if params, ok := req.Params["dryRun"]; ok {
+		createOpts.DryRun = []string{params}
+	}
+
+	if fieldValidation, ok := req.Params["fieldValidation"]; ok {
+		createOpts.FieldValidation = fieldValidation
+	}
+
+	if fieldMgr, ok := req.Params["fieldManager"]; ok {
+		createOpts.FieldManager = fieldMgr
+	}
+
+	fmt.Println("Create Options", createOpts)
+
+	newObj, err := client.Namespace(req.Namespace).Create(ctx, resourceObj, createOpts)
+	if err == nil {
+		fmt.Println("Hell Yeah!!!!!!!!!!!!! Created resource")
+		return newObj, nil
+	}
+
+	fmt.Println("We failed to create resource", err)
+	return nil, fmt.Errorf("failed to create resource: %w", err)
+}
+
+func (a *Agent) processIncomingPatchResourceRequest(ctx context.Context, req *event.ResourceRequest, client dynamic.NamespaceableResourceInterface, dynClient *dynamic.DynamicClient, log *logrus.Entry) (*unstructured.Unstructured, error) {
+	log.Debugf("Processing PATCH request for resource %s", req.Resource)
+
+	patchOpts := v1.PatchOptions{}
+	if params, ok := req.Params["dryRun"]; ok {
+		patchOpts.DryRun = []string{params}
+	}
+
+	if force, ok := req.Params["force"]; ok {
+		forceBool, err := strconv.ParseBool(force)
+		if err != nil {
+			return nil, err
+		}
+		patchOpts.Force = &forceBool
+	}
+
+	if fieldValidation, ok := req.Params["fieldValidation"]; ok {
+		patchOpts.FieldValidation = fieldValidation
+	}
+
+	if fieldMgr, ok := req.Params["fieldManager"]; ok {
+		patchOpts.FieldManager = fieldMgr
+	}
+
+	return client.Namespace(req.Namespace).Patch(ctx, req.Name, k8stypes.MergePatchType, req.Body, v1.PatchOptions{})
+}
+
 // processIncomingResourceRequest processes an incoming event that requests
 // to retrieve information from the Kubernetes API.
 //
@@ -125,6 +192,46 @@ func (a *Agent) processIncomingResourceRequest(ev *event.Event) error {
 
 	ctx, cancel := context.WithTimeout(a.context, defaultResourceRequestTimeout)
 	defer cancel()
+	if strings.EqualFold(rreq.Method, http.MethodPost) {
+		obj, err := a.processIncomingPostResourceRequest(ctx, rreq, rif, dynClient, logCtx)
+
+		status := event.HttpStatusFromError(err)
+		q := a.queues.SendQ(defaultQueueName)
+		if q == nil {
+			logCtx.Error("Remote queue disappeared")
+			return nil
+		}
+
+		data, err := json.Marshal(obj)
+		if err != nil {
+			return err
+		}
+
+		q.Add(a.emitter.NewResourceResponseEvent(rreq.UUID, status, string(data)))
+		logCtx.Tracef("Emitted resource response for POST request")
+
+		return nil
+
+	} else if strings.EqualFold(rreq.Method, http.MethodPatch) {
+		obj, err := a.processIncomingPatchResourceRequest(ctx, rreq, rif, dynClient, logCtx)
+
+		status := event.HttpStatusFromError(err)
+		q := a.queues.SendQ(defaultQueueName)
+		if q == nil {
+			logCtx.Error("Remote queue disappeared")
+			return nil
+		}
+
+		data, err := json.Marshal(obj)
+		if err != nil {
+			return err
+		}
+
+		q.Add(a.emitter.NewResourceResponseEvent(rreq.UUID, status, string(data)))
+		logCtx.Tracef("Emitted resource response PATCH request")
+
+		return nil
+	}
 
 	var jsonres []byte
 	var unres *unstructured.Unstructured
@@ -601,3 +708,5 @@ func (a *Agent) deleteAppProject(project *v1alpha1.AppProject) error {
 	}
 	return nil
 }
+
+// Unable to execute resource action: the server was unable to return a response in the time allotted, but may still be processing the request

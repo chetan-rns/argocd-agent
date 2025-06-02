@@ -24,7 +24,9 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 
 	backend_mocks "github.com/argoproj-labs/argocd-agent/internal/backend/mocks"
@@ -747,4 +749,92 @@ func Test_processIncomingResourceResyncEvent(t *testing.T) {
 		err = a.processIncomingResourceResyncEvent(event.New(ev, event.TargetResourceResync))
 		assert.Equal(t, expected, err.Error())
 	})
+}
+func Test_processIncomingPostResourceRequest(t *testing.T) {
+	// Setup
+	a := newAgent(t)
+	ctx := context.Background()
+	namespace := "test-ns"
+	resourceName := "test-resource"
+	gvr := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	body := []byte(`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"test-resource","namespace":"test-ns"}}`)
+	params := map[string]string{
+		"dryRun":          "All",
+		"fieldValidation": "Strict",
+		"fieldManager":    "test-manager",
+	}
+	req := &event.ResourceRequest{
+		GroupVersionResource: gvr,
+		Namespace:            namespace,
+		Body:                 body,
+		Params:               params,
+	}
+
+	// Mock dynamic client
+	type fakeClient struct {
+		dynamic.NamespaceableResourceInterface
+		t               *testing.T
+		expectNamespace string
+		expectObjName   string
+	}
+	fc := &fakeClient{t: t, expectNamespace: namespace, expectObjName: resourceName}
+	createdObj := &unstructured.Unstructured{}
+	createdObj.SetName(resourceName)
+	createdObj.SetNamespace(namespace)
+
+	// Implement Namespace() and Create() for fakeClient
+	nsClient := &struct {
+		dynamic.ResourceInterface
+		t *testing.T
+	}{
+		t: t,
+	}
+	nsClient.ResourceInterface = &struct {
+		dynamic.ResourceInterface
+	}{
+		ResourceInterface: nil,
+	}
+	// Patch Create to check input and return createdObj
+	nsClient.Create = func(ctx context.Context, obj *unstructured.Unstructured, opts v1.CreateOptions, subresources ...string) (*unstructured.Unstructured, error) {
+		assert.Equal(t, resourceName, obj.GetName())
+		assert.Equal(t, namespace, obj.GetNamespace())
+		assert.Equal(t, []string{"All"}, opts.DryRun)
+		assert.Equal(t, "Strict", opts.FieldValidation)
+		assert.Equal(t, "test-manager", opts.FieldManager)
+		return createdObj, nil
+	}
+	fc.NamespaceableResourceInterface = &struct {
+		dynamic.NamespaceableResourceInterface
+	}{
+		NamespaceableResourceInterface: nil,
+	}
+	fc.Namespace = func(ns string) dynamic.ResourceInterface {
+		assert.Equal(t, namespace, ns)
+		return nsClient
+	}
+
+	// Call function under test
+	log := log().WithField("test", "processIncomingPostResourceRequest")
+	obj, err := a.processIncomingPostResourceRequest(ctx, req, fc, nil, log)
+	require.NoError(t, err)
+	require.NotNil(t, obj)
+	assert.Equal(t, resourceName, obj.GetName())
+	assert.Equal(t, namespace, obj.GetNamespace())
+
+	// Test: Unmarshal error
+	badReq := &event.ResourceRequest{
+		GroupVersionResource: gvr,
+		Namespace:            namespace,
+		Body:                 []byte(`{invalid-json}`),
+	}
+	_, err = a.processIncomingPostResourceRequest(ctx, badReq, fc, nil, log)
+	require.Error(t, err)
+
+	// Test: Create error
+	nsClient.Create = func(ctx context.Context, obj *unstructured.Unstructured, opts v1.CreateOptions, subresources ...string) (*unstructured.Unstructured, error) {
+		return nil, fmt.Errorf("create failed")
+	}
+	req.Body = body
+	_, err = a.processIncomingPostResourceRequest(ctx, req, fc, nil, log)
+	require.ErrorContains(t, err, "failed to create resource")
 }
