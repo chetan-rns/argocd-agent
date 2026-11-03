@@ -339,7 +339,12 @@ addTunnelSANToResourceProxyCert() {
     exit 1
   fi
 
-  local IPADDR=$(ip r show default | sed -e 's,.*\ src\ ,,' | sed -e 's,\ metric.*$,,')
+  local IPADDR
+  if [[ "$OSTYPE" != "darwin"* ]]; then
+    IPADDR=$(ip r show default | sed -e 's,.*\ src\ ,,' | sed -e 's,\ metric.*$,,')
+  else
+    IPADDR=$(ipconfig getifaddr en0)
+  fi
 
   ARGOCD_AGENT_PRINCIPAL_CONTEXT=vcluster-control-plane \
   ARGOCD_AGENT_PRINCIPAL_NAMESPACE=${ARGOCD_PRINCIPAL_NAMESPACE} \

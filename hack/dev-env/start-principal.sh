@@ -76,7 +76,11 @@ if [ -f "$E2E_ENV_FILE" ]; then
 fi
 
 if test "${ARGOCD_AGENT_RESOURCE_PROXY}" = ""; then
-    ARGOCD_AGENT_RESOURCE_PROXY=$(ip r show default | sed -e 's,.*\ src\ ,,' | sed -e 's,\ metric.*$,,')
+    if [[ "$OSTYPE" != "darwin"* ]]; then
+        ARGOCD_AGENT_RESOURCE_PROXY=$(ip r show default | sed -e 's,.*\ src\ ,,' | sed -e 's,\ metric.*$,,')
+    else
+        ARGOCD_AGENT_RESOURCE_PROXY=$(ipconfig getifaddr en0)
+    fi
 fi
 export ARGOCD_AGENT_RESOURCE_PROXY
 

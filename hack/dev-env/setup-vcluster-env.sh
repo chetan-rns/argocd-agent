@@ -288,7 +288,11 @@ apply() {
     kubectl --context vcluster-$cluster create ns $namespace || true
 
     # Update principal Argo CD ConfigMap 'argocd-cmd-params-cm' to use agent address as redis endpoint, to enable redis proxy functionality
-    ARGO_AGENT_IPADDR=$(ip r show default | sed -e 's,.*\ src\ ,,' | sed -e 's,\ metric.*$,,')
+    if [[ "$OSTYPE" != "darwin"* ]]; then
+        ARGO_AGENT_IPADDR=$(ip r show default | sed -e 's,.*\ src\ ,,' | sed -e 's,\ metric.*$,,')
+    else
+        ARGO_AGENT_IPADDR=$(ipconfig getifaddr en0)
+    fi
     echo "Argo cd agent IPADDR is $ARGO_AGENT_IPADDR"
     if test "$ARGOCD_AGENT_IN_CLUSTER" != ""; then
 	    sed -i.bak "s/redis-server-address/argocd-agent-redis-proxy/g" "$TMP_DIR/control-plane/argocd-cmd-params-cm.yaml"
